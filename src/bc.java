@@ -25,6 +25,9 @@ Verfy the signature with public key that has been restored.
 
 */
 
+import java.security.*;
+import java.security.spec.InvalidKeySpecException;
+import java.security.spec.X509EncodedKeySpec;
 import java.util.*;
 import java.io.*;
 import java.net.*;
@@ -40,12 +43,34 @@ import javax.xml.bind.annotation.XmlElement;
 import javax.xml.bind.annotation.XmlRootElement;
 
 // CDE: Would normally keep a process block for each process in the multicast group:
-//class ProcessBlock {
-//    int processID;
-//    PublicKey pubKey;
-//    int port;
-//    String IPAddress;
-//}
+class ProcessBlock {
+    int processID;
+    PublicKey pubKey;
+    int port;
+    String IPAddress;
+
+    public ProcessBlock(int processID, PublicKey pubKey, int port, String IPAddress) {
+        this.processID = processID;
+        this.pubKey = pubKey;
+        this.port = port;
+        this.IPAddress = IPAddress;
+    }
+
+    public ProcessBlock(int processID, PublicKey pubKey) {
+        this.processID = processID;
+        this.pubKey = pubKey;
+        this.port = 0;
+        this.IPAddress = "";
+    }
+
+    public int getProcessID() {
+        return processID;
+    }
+
+    public PublicKey getPubKey() {
+        return pubKey;
+    }
+}
 
 // Class to keep track of the ports used by the different servers in the bc application.
 class Ports {
@@ -73,30 +98,44 @@ class Ports {
 class PublicKeyWorker extends Thread {
     // socket, passed in as argument. This will be a connection to another bc process
     Socket sock;
+    ProcessBlock[] processBlocks;
 
     // constructor, setting local reference to socket passed in
-    PublicKeyWorker(Socket s) {
+    PublicKeyWorker(Socket s, ProcessBlock[] processBlocks) {
         sock = s;
+        this.processBlocks = processBlocks;
     }
 
+    // I got the idea for how to send public keys from
+    // https://stackoverflow.com/questions/7733270/java-public-key-different-after-sent-over-socket
     public void run() {
         try {
             // creating reader to read data from socket (sent from other processes)
-            BufferedReader in = new BufferedReader(new InputStreamReader(sock.getInputStream()));
-            // reading in data from socket (which will be a public key)
-            String data = in.readLine();
+            ObjectInputStream in = new ObjectInputStream(sock.getInputStream());
+            // reading in object from socket (which will be a public key wrapper)
+            PublicKeyWrapper wrapper = (PublicKeyWrapper) in.readObject();
+            // getting process id of public key from wrapper
+            int pidForPubKey = wrapper.getpID();
+            // getting the byte array that will be converted back into a public key
+            byte[] pubKeyBytes = wrapper.getBytes();
+            // converting the byte array back into a public key
+            // (source: https://stackoverflow.com/questions/7733270/java-public-key-different-after-sent-over-socket)
+            PublicKey publicKey = KeyFactory.getInstance("RSA").generatePublic(new X509EncodedKeySpec(pubKeyBytes));
             // printing out public key to console
-            System.out.println("Got key: " + data);
+            System.out.println("Got key: " + publicKey);
+            // storing public key info in a process block, which will be stored in an array
+            ProcessBlock processBlock = new ProcessBlock(pidForPubKey, publicKey);
+            processBlocks[pidForPubKey] = processBlock;
             // closing connection
             sock.close();
-        } catch (IOException x) {
+        } catch (IOException | ClassNotFoundException | NoSuchAlgorithmException | InvalidKeySpecException x) {
             x.printStackTrace();
         }
     }
 }
 
 class PublicKeyServer implements Runnable {
-    //public ProcessBlock[] PBlock = new ProcessBlock[3]; // CDE: One block to store info for each process.
+    public ProcessBlock[] processBlocks = new ProcessBlock[3]; // CDE: One block to store info for each process.
 
     public void run() {
         // setup
@@ -113,7 +152,7 @@ class PublicKeyServer implements Runnable {
                 sock = servsock.accept();
                 // starting a PublicKeyWorker in a new thread.
                 // This frees up the PublicKeyServer to accept new connections from other processes
-                new PublicKeyWorker(sock).start();
+                new PublicKeyWorker(sock, processBlocks).start();
             }
         } catch (IOException ioe) {
             System.out.println(ioe);
@@ -236,7 +275,7 @@ class UnverifiedBlockConsumer implements Runnable {
 
                 // if statement checks to see if data has already been added to the blockchain.
                 // Doesn't always work but we don't care
-                if (bc.blockchain.indexOf(data.substring(1, 9)) < 0) {
+                if (!bc.blockchain.contains(data.substring(1, 9))) { // todo
                     // creating the fake verified block to add to the blockchain from the data we just verified
                     fakeVerifiedBlock = "[" + data + " verified by P" + bc.PID + " at time "
                             + Integer.toString(ThreadLocalRandom.current().nextInt(100, 1000)) + "]\n";
@@ -572,37 +611,81 @@ class DataFileToXmlParser {
     }
 }
 
+// got idea for this from https://stackoverflow.com/questions/7733270/java-public-key-different-after-sent-over-socket
+// Allows me to send the public key over a socket.
+class PublicKeyWrapper implements Serializable {
+    private byte[] bytes;
+    private int pID;
+
+    public PublicKeyWrapper(byte[] bytes, int pID) {
+        this.bytes = bytes;
+        this.pID = pID;
+    }
+
+    public byte[] getBytes() {
+        return bytes;
+    }
+
+    public int getpID() {
+        return pID;
+    }
+}
 
 public class bc {
     static String serverName = "localhost";
     static String blockchain = "[First block]";
     static int numProcesses = 3;
     static int PID = 0;
+    static KeyPair keyPair;
+
+    // generating an RSA public-private key pair
+    private KeyPair generateKeyPair(long seed) throws Exception {
+        KeyPairGenerator keyGenerator = KeyPairGenerator.getInstance("RSA");
+        SecureRandom rng = SecureRandom.getInstance("SHA1PRNG", "SUN");
+        rng.setSeed(seed);
+        keyGenerator.initialize(1024, rng);
+
+        return (keyGenerator.generateKeyPair());
+    }
 
     // send out public key and unverified blocks to other bc processes
-    public void MultiSend() {
+    private void MultiSend() {
         // this socket will be used to connect to servers in other processes
         Socket sock;
         // this print stream will be used to write data to other servers
-        PrintStream toServer;
+        ObjectOutputStream toServer;
 
         try {
+            // generate public and private keys for this process
+            keyPair = generateKeyPair(999); // Use a random seed in real life
+
             // Send out public key to all bc processes' PublicKeyServers (including myself).
-            // We can find their port numbers based on the port numbering scheme using their process IDs
-            /** changing this later i think */
             for (int i = 0; i < numProcesses; i++) {
+                // creating a socket to connect to each process, including myself
                 sock = new Socket(serverName, Ports.KeyServerPortBase + (i * 1000));
-                toServer = new PrintStream(sock.getOutputStream());
-                toServer.println("FakeKeyProcess" + bc.PID);
+                toServer = new ObjectOutputStream(sock.getOutputStream());
+                toServer.writeObject(new PublicKeyWrapper(keyPair.getPublic().getEncoded(), PID));
                 toServer.flush();
                 sock.close();
             }
-            /***/
             // pause to make sure all processes received the public keys
             Thread.sleep(1000);
             // send unverified blocks to all processes, including myself
             /** replace this with reading in data and creating unverified blocks and sending them out */
+            // parse data file for this process into XML
             String xml = new DataFileToXmlParser().parse(PID);
+            // convert to SHA-256 array of bytes
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            md.update(xml.getBytes());
+            byte[] byteData = md.digest();
+
+            // CDE: Convert the byte[] to hex format. THIS IS NOT VERIFIED CODE:
+            StringBuffer sb = new StringBuffer();
+            for (int i = 0; i < byteData.length; i++) {
+                sb.append(Integer.toString((byteData[i] & 0xff) + 0x100, 16).substring(1));
+            }
+
+            String sha256String = sb.toString();
             /***/
         } catch (Exception x) {
             x.printStackTrace();
