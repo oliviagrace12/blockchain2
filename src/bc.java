@@ -107,7 +107,7 @@ class PublicKeyWorker extends Thread {
 
     // I got the idea for how to send public keys from
     // https://stackoverflow.com/questions/7733270/java-public-key-different-after-sent-over-socket
-    // TODO change this to use XML (once figure it out for other part)
+    // TODO change this to use XML (once figure it out for other part) -- no
     public void run() {
         try {
             // creating reader to read data from socket (sent from other processes)
@@ -190,11 +190,25 @@ class UnverifiedBlockServer implements Runnable {
                 // reader to read in unverified block from the socket
                 BufferedReader in = new BufferedReader(new InputStreamReader(sock.getInputStream()));
                 // reading in data
+                StringBuffer buffer = new StringBuffer();
                 String data = in.readLine();
+                while (data != null) {
+                    buffer.append(data);
+                    data = in.readLine();
+                }
+//                String xmlHeader = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>";
+//                String[] blockXmls = buffer.toString().split(xmlHeader);
+
+//                for (int i = 0; i < blockXmls.length; i++) {
+//                    String blockXml = xmlHeader + blockXmls[i];
                 // printing data to console
-                System.out.println("Put in priority queue: " + data + "\n");
+
+                String allData = buffer.toString();
+                System.out.println("Put in priority queue: " + allData + "\n");
                 // putting data (unverified block) into queue
-                queue.put(data);
+                queue.put(allData);
+//                }
+
                 // closing connection
                 sock.close();
             } catch (Exception x) {
@@ -234,12 +248,10 @@ class UnverifiedBlockServer implements Runnable {
 class UnverifiedBlockConsumer implements Runnable {
     // thread safe queue, passed in through the constructor
     BlockingQueue<String> queue;
-    int pid;
     KeyPair keyPair;
 
-    UnverifiedBlockConsumer(BlockingQueue<String> queue, int pid, KeyPair keyPair) {
+    UnverifiedBlockConsumer(BlockingQueue<String> queue, KeyPair keyPair) {
         this.queue = queue;
-        this.pid = pid;
         this.keyPair = keyPair;
     }
 
@@ -276,31 +288,39 @@ class UnverifiedBlockConsumer implements Runnable {
                 }
                 // If we've reached this point it means we have a verified block to add to the blockchain.
 
-                // if statement checks to see if data has already been added to the blockchain.
-                // Doesn't always work but we don't care
-                if (!bc.blockchain.contains(unverifiedBlock.substring(1, 9))) { // todo
-                    BlockRecord unverifiedBlockRecord = getBlockRecordFromBlockXml(unverifiedBlock);
+                // converting the unverified xml block to a BlockRecord object
+                BlockRecord newBlockRecord = getBlockRecordFromBlockXml(unverifiedBlock);
+
+                // check to see if data has already been added to the blockchain.
+                if (!bc.blockchain.contains(newBlockRecord.getABlockID())) {
                     // setting the verified by field
-                    unverifiedBlockRecord.setAVerificationProcessID("" + pid);
+                    newBlockRecord.setAVerificationProcessID("" + bc.PID);
                     // setting the seed field
-                    unverifiedBlockRecord.setASeed("" + j);
+                    newBlockRecord.setASeed("" + j);
                     // converting back to XML
-                    String newBlockXmlWithSeed = getXmlFromBlockRecord(unverifiedBlockRecord);
+                    String newBlockXmlWithSeed = getXmlFromBlockRecord(newBlockRecord);
 
                     // gather things to put into new hash: previous blockchain hash and new block data including seed
                     String stuffToHash = getPreviousHash(bc.blockchain) + newBlockXmlWithSeed;
                     // create hash
                     String sha256String = hashData(stuffToHash);
                     // sign hex string
-                    byte[] signedSHA256 = signData(sha256String.getBytes(), keyPair.getPrivate());
+                    byte[] signedSHA256bytes = signData(sha256String.getBytes(), keyPair.getPrivate());
+                    // convert to string
+                    String signedSHA256 = convertToHex(signedSHA256bytes);
 
                     // inserting the hashes into the new block
-                    String verifiedBlock = unverifiedBlock.substring(0, unverifiedBlock.indexOf("<blockID>")) +
-                            "<SignedSHA256>" + signedSHA256 + "</SignedSHA256>\n" +
-                            "    <SHA256String>" + sha256String + "</SHA256String>\n    " +
-                            unverifiedBlock.substring(unverifiedBlock.indexOf("<blockID>"));
+                    newBlockRecord.setASHA256String(sha256String);
+                    newBlockRecord.setASignedSHA256(signedSHA256);
+//                    String verifiedBlock = unverifiedBlock.substring(0, unverifiedBlock.indexOf("<blockID>")) +
+//                            "<SignedSHA256>" + signedSHA256 + "</SignedSHA256>\n" +
+//                            "    <SHA256String>" + sha256String + "</SHA256String>\n    " +
+//                            unverifiedBlock.substring(unverifiedBlock.indexOf("<blockID>"));
 
-                    System.out.println("---- New verified block from PID " + pid);
+                    // convert verified BlockRecord to XML
+                    String verifiedBlock = getXmlFromBlockRecord(newBlockRecord);
+
+                    System.out.println("---- New verified block from PID " + bc.PID + " -----");
                     System.out.println(verifiedBlock);
 
                     // adding new block to blockchain
@@ -324,6 +344,7 @@ class UnverifiedBlockConsumer implements Runnable {
             }
         } catch (Exception e) {
             System.out.println(e);
+            e.printStackTrace();
         }
     }
 
@@ -346,8 +367,12 @@ class UnverifiedBlockConsumer implements Runnable {
     }
 
     private String getPreviousHash(String blockchain) {
-        String[] array = blockchain.split("<SHA256String>");
-        return array[1];
+        System.out.println("Current blockchain: ");
+        System.out.println(blockchain);
+        String str = blockchain.substring(blockchain.indexOf("<ASHA256String>"), blockchain.indexOf("</ASHA256String>"));
+        str = str.replace("<ASHA256String>", "");
+        str = str.replace("</ASHA256String>", "");
+        return str;
     }
 
     public static byte[] signData(byte[] data, PrivateKey key) throws Exception {
@@ -359,12 +384,7 @@ class UnverifiedBlockConsumer implements Runnable {
     }
 
     public String convertToHex(byte[] byteData) {
-        // convert array of bytes to hex
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < byteData.length; i++) {
-            sb.append(Integer.toString((byteData[i] & 0xff) + 0x100, 16).substring(1));
-        }
-        return sb.toString();
+        return Base64.getEncoder().encodeToString(byteData);
     }
 
     public String hashData(String unverifiedBlock) throws NoSuchAlgorithmException {
@@ -390,6 +410,8 @@ class BlockchainWorker extends Thread {
 
     public void run() {
         try {
+            // TODO verify new blockchain using pub key and verification PID
+
             // Creating a reader to read in blockchain data from the socket
             BufferedReader in = new BufferedReader(new InputStreamReader(sock.getInputStream()));
             String data = "";
@@ -463,7 +485,7 @@ class BlockRecord {
     String Treat;
     String Rx;
 
-  /* CDE: A=header, F=Indentification, G=Medical */
+    /* CDE: A=header, F=Indentification, G=Medical */
 
     public String getAPreviousHash() {
         return PreviousHash;
@@ -604,7 +626,7 @@ class DataFileToXmlParser {
     private static final int iRX = 6;
 
 
-    public String parse(int pnum) {
+    public List<String> parse(int pnum) {
 
         int UnverifiedBlockPort;
         int BlockChainPort;
@@ -645,7 +667,7 @@ class DataFileToXmlParser {
                 JAXBContext jaxbContext = JAXBContext.newInstance(BlockRecord.class);
                 Marshaller jaxbMarshaller = jaxbContext.createMarshaller();
                 jaxbMarshaller.setProperty(Marshaller.JAXB_FORMATTED_OUTPUT, true);
-                StringWriter sw = new StringWriter();
+
 
                 // index to access block record array
                 int n = 0;
@@ -655,7 +677,6 @@ class DataFileToXmlParser {
                     // create a new block record and add it to the block record array
                     blockArray[n] = new BlockRecord();
 
-//                    signData(SHA256String.getBytes(), keyPair.getPrivate());
                     blockArray[n].setASHA256String("SHA string goes here..."); //TODO
                     blockArray[n].setASignedSHA256("Signed SHA string goes here..."); //TODO
 
@@ -663,7 +684,7 @@ class DataFileToXmlParser {
                     suuid = UUID.randomUUID().toString();
                     blockArray[n].setABlockID(suuid);
                     // set process number
-                    blockArray[n].setACreatingProcess("Process" + pnum);
+                    blockArray[n].setACreatingProcess("" + pnum);
                     // we will set the verification id later during verification
                     blockArray[n].setAVerificationProcessID("To be set later...");
                     // setting the actual patient data. We know the data pieces will be separated by the string " +"
@@ -688,29 +709,35 @@ class DataFileToXmlParser {
                 }
                 System.out.println("\n");
 
-                // marshalling the whole BlockRecord array into the string writer
+                List<String> xmlBlocks = new ArrayList<>();
+                // converting each element of the BlockWriter array into XML and putting it into the StringWriter
+                StringWriter sw;
                 for (int i = 0; i < n; i++) {
+                    sw = new StringWriter();
                     jaxbMarshaller.marshal(blockArray[i], sw);
+                    String xmlBlock = sw.toString();
+                    System.out.println("--- Created unverified block ------");
+                    System.out.println(xmlBlock);
+                    xmlBlocks.add(xmlBlock);
                 }
-                String fullBlock = sw.toString();
-//                System.out.println("----- FULL BLOCK ------");
-//                System.out.println(fullBlock);
+//                // String containing each block converted to XML
+//                String fullBlock = sw.toString();
+//
+//                // formatting string to make one single XML out of many
+//                // (only one header for all blocks instead of a header for each)
+//                String XMLHeader = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>";
+//                String cleanBlock = fullBlock.replace(XMLHeader, "");
+//                String XMLBlock = XMLHeader + "\n<BlockLedger>" + cleanBlock + "</BlockLedger>";
 
-                // formatting XML
-                String XMLHeader = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>";
-                String cleanBlock = fullBlock.replace(XMLHeader, "");
-                String XMLBlock = XMLHeader + "\n<BlockLedger>" + cleanBlock + "</BlockLedger>";
-
-//                System.out.println("----- FORMATTED BLOCK ------");
-//                System.out.println(XMLBlock);
-                return XMLBlock;
+                return xmlBlocks;
+//                return fullBlock;
             } catch (IOException e) {
                 e.printStackTrace();
             }
         } catch (Exception e) {
             e.printStackTrace();
         }
-        return "";
+        return new ArrayList<>();
     }
 }
 
@@ -771,24 +798,29 @@ public class bc {
 
     public void sendOutUnverifiedBlocks() throws IOException {
         // parse data file for this process into XML
-        String xml = new DataFileToXmlParser().parse(PID);
+        List<String> xmls = new DataFileToXmlParser().parse(PID);
 
-        // this socket will be used to connect to servers in other processes
-        Socket sock;
-        // sending out unverified block to all bc processes, including self
-        PrintStream toServer_block;
+        for (String xml : xmls) {
+            System.out.println("--- Sending out unverified block -----");
+            System.out.println(xml);
 
-        for (int i = 0; i < bc.numProcesses; i++) {
-            // creating a socket to connect to each process
-            sock = new Socket(bc.serverName, Ports.UnverifiedBlockServerPortBase + (i * 1000));
-            // creating a print stream to write the data to the socket
-            toServer_block = new PrintStream(sock.getOutputStream());
-            // writing the new blockchain to the socket, sending it to the other processes
-            toServer_block.println(xml);
-            // flushing the socket connection to make sure data gets sent immediately
-            toServer_block.flush();
-            // closing connection
-            sock.close();
+            // this socket will be used to connect to servers in other processes
+            Socket sock;
+            // sending out unverified block to all bc processes, including self
+            PrintStream toServer_block;
+
+            for (int i = 0; i < bc.numProcesses; i++) {
+                // creating a socket to connect to each process
+                sock = new Socket(bc.serverName, Ports.UnverifiedBlockServerPortBase + (i * 1000));
+                // creating a print stream to write the data to the socket
+                toServer_block = new PrintStream(sock.getOutputStream());
+                // writing the new blockchain to the socket, sending it to the other processes
+                toServer_block.println(xml);
+                // flushing the socket connection to make sure data gets sent immediately
+                toServer_block.flush();
+                // closing connection
+                sock.close();
+            }
         }
     }
 
@@ -841,6 +873,16 @@ public class bc {
             Thread.sleep(5000);
         } catch (Exception e) {
         }
+
+//        System.out.println("*** init ***");
+//        System.out.println(blockchain);
+
+        // create initial block
+        createAndSendFirstBlock();
+//        System.out.println("*** init2 ***");
+//        System.out.println(blockchain);
+
+
         // send out public key, unverified blocks
         new bc().MultiSend();
         // pause for 1 second to make sure all processes received data
@@ -850,6 +892,63 @@ public class bc {
         }
 
         // start up UnverifiedBlockConsumer in a new thread
-        new Thread(new UnverifiedBlockConsumer(queue, PID, keyPair)).start();
+        new Thread(new UnverifiedBlockConsumer(queue, keyPair)).start();
+    }
+
+    public static void createAndSendFirstBlock() {
+        try {
+            // create initial blockchain
+            BlockRecord init = new BlockRecord();
+            // get universally unique identifier for the block record and set it in the block record
+            init.setABlockID(UUID.randomUUID().toString());
+            // set process number
+            init.setACreatingProcess("" + PID);
+
+            // Setting up marshaller and helper classes. These will convert our BlockRecords into XML strings
+            // that can be sent over the network to other processes.
+            JAXBContext jaxbContext = JAXBContext.newInstance(BlockRecord.class);
+            Marshaller jaxbMarshaller = jaxbContext.createMarshaller();
+            jaxbMarshaller.setProperty(Marshaller.JAXB_FORMATTED_OUTPUT, true);
+            StringWriter sw = new StringWriter();
+
+            jaxbMarshaller.marshal(init, sw);
+            String xmlBlock = sw.toString();
+
+            // create hash
+            String sha256String = hashData(xmlBlock);
+
+            // inserting the hashes into the new block
+            init.setASHA256String(sha256String);
+            init.setASignedSHA256(sha256String);
+
+            // convert completed block record to XML
+            StringWriter sw2 = new StringWriter();
+            jaxbMarshaller.marshal(init, sw2);
+
+            String xml = sw2.toString();
+
+//            System.out.println("*** Setting init ***");
+//            System.out.println(xml);
+
+            // set initial blockchain
+            bc.blockchain = xml;
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+
+
+    }
+
+    public static String convertToHex(byte[] byteData) {
+        return Base64.getEncoder().encodeToString(byteData);
+    }
+
+    public static String hashData(String unverifiedBlock) throws NoSuchAlgorithmException {
+        // convert to SHA-256 array of bytes
+        MessageDigest md = MessageDigest.getInstance("SHA-256");
+        md.update(unverifiedBlock.getBytes());
+        byte[] byteData = md.digest();
+
+        return convertToHex(byteData);
     }
 }
