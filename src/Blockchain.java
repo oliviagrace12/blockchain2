@@ -1,28 +1,41 @@
-/* 2018-01-14:
-bc.java for BlockChain
+/*--------------------------------------------------------
+
+1. Name / Date: Olivia Chisman / 5.29.19
+
+2. Java version used, if not the official version for the class:
+
+build 1.8.0_112
+
+3. Precise command-line compilation examples / instructions:
+
+> javac Blockchain.java
+
+
+4. Precise examples / instructions to run this program:
+
+In separate shell windows:
+
+> java Blockchain 0
+> java Blockchain 1
+> java Blockchain 2
+
+5. List of files needed for running the program.
+
+Blockchain.java
+BlockInput0.txt
+BlockInput1.txt
+BlockInput2.txt
+
+6. Notes:
+
+----------------------------------------------------------*/
+
+/*
+Initial source from
+
 Dr. Clark Elliott for CSC435
 
-This is some quick sample code giving a simple framework for coordinating multiple processes in a blockchain group.
-
-INSTRUCTIONS:
-
-Set the numProceses class variable (e.g., 1,2,3), and use a batch file to match
-
-AllStart.bat:
-
-REM for three procesess:
-start java bc 0
-start java bc 1
-java bc 2
-
-You might want to start with just one process to see how it works.
-
-Thanks: http://www.javacodex.com/Concurrency/PriorityBlockingQueue-Example
-
-Notes to CDE:
-Optional: send public key as Base64 XML along with a signed string.
-Verfy the signature with public key that has been restored.
-
+http://www.javacodex.com/Concurrency/PriorityBlockingQueue-Example
 */
 
 import java.security.*;
@@ -41,7 +54,7 @@ import javax.xml.bind.Unmarshaller;
 import javax.xml.bind.annotation.XmlElement;
 import javax.xml.bind.annotation.XmlRootElement;
 
-// CDE: Would normally keep a process block for each process in the multicast group:
+// Data structure to keep track of other processes' public keys
 class ProcessBlock {
     int processID;
     PublicKey pubKey;
@@ -107,7 +120,6 @@ class PublicKeyWorker extends Thread {
 
     // I got the idea for how to send public keys from
     // https://stackoverflow.com/questions/7733270/java-public-key-different-after-sent-over-socket
-    // TODO change this to use XML (once figure it out for other part) -- no
     public void run() {
         try {
             // creating reader to read data from socket (sent from other processes)
@@ -259,8 +271,6 @@ class UnverifiedBlockConsumer implements Runnable {
         String unverifiedBlock;
         PrintStream toServer;
         Socket sock;
-        String newblockchain;
-        String fakeVerifiedBlock;
 
         System.out.println("Starting the Unverified Block Priority Queue Consumer thread.\n");
         try {
@@ -348,12 +358,14 @@ class UnverifiedBlockConsumer implements Runnable {
     private String getXmlFromBlockRecord(BlockRecord blockRecord) throws JAXBException {
         JAXBContext jaxbContext = JAXBContext.newInstance(BlockRecord.class);
         Marshaller jaxbMarshaller = jaxbContext.createMarshaller();
+        // formatting so its printed nicely
         jaxbMarshaller.setProperty(Marshaller.JAXB_FORMATTED_OUTPUT, true);
         StringWriter sw = new StringWriter();
         jaxbMarshaller.marshal(blockRecord, sw);
         return sw.toString();
     }
 
+    // converting from XML to java object
     private BlockRecord getBlockRecordFromBlockXml(String xml) throws JAXBException {
         JAXBContext jaxbContext = JAXBContext.newInstance(BlockRecord.class);
         Unmarshaller jaxbUnmarshaller = jaxbContext.createUnmarshaller();
@@ -362,9 +374,8 @@ class UnverifiedBlockConsumer implements Runnable {
         return (BlockRecord) jaxbUnmarshaller.unmarshal(reader);
     }
 
+    // parsing out previous hash from blockchain XML string
     private String getPreviousHash(String blockchain) {
-//        System.out.println("Current blockchain: ");
-//        System.out.println(blockchain);
         String str = blockchain.substring(blockchain.indexOf("<ASHA256String>"), blockchain.indexOf("</ASHA256String>"));
         str = str.replace("<ASHA256String>", "");
         str = str.replace("</ASHA256String>", "");
@@ -379,6 +390,7 @@ class UnverifiedBlockConsumer implements Runnable {
         return signer.sign();
     }
 
+    // convert from an array of bytes to a string
     public String convertToString(byte[] byteData) {
         return Base64.getEncoder().encodeToString(byteData);
     }
@@ -684,6 +696,7 @@ class DataFileToXmlParser {
         System.out.println("Process number: " + pnum + " Ports: " + UnverifiedBlockPort + " " +
                 BlockChainPort + "\n");
 
+        // input file is set based on process number
         switch (pnum) {
             case 1:
                 FILENAME = "BlockInput1.txt";
@@ -767,17 +780,8 @@ class DataFileToXmlParser {
                     System.out.println(xmlBlock);
                     xmlBlocks.add(xmlBlock);
                 }
-//                // String containing each block converted to XML
-//                String fullBlock = sw.toString();
-//
-//                // formatting string to make one single XML out of many
-//                // (only one header for all blocks instead of a header for each)
-//                String XMLHeader = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>";
-//                String cleanBlock = fullBlock.replace(XMLHeader, "");
-//                String XMLBlock = XMLHeader + "\n<BlockLedger>" + cleanBlock + "</BlockLedger>";
 
                 return xmlBlocks;
-//                return fullBlock;
             } catch (IOException e) {
                 e.printStackTrace();
             }
@@ -845,14 +849,8 @@ public class Blockchain {
         } catch (Exception e) {
         }
 
-//        System.out.println("*** init ***");
-//        System.out.println(blockchain);
-
         // create initial block
         createAndSendFirstBlock();
-//        System.out.println("*** init2 ***");
-//        System.out.println(blockchain);
-
 
         // send out public key, unverified blocks
         new Blockchain().MultiSend();
