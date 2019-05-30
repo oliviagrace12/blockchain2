@@ -307,7 +307,7 @@ class UnverifiedBlockConsumer implements Runnable {
                     // sign hex string
                     byte[] signedSHA256bytes = signData(sha256String.getBytes(), keyPair.getPrivate());
                     // convert to string
-                    String signedSHA256 = convertToHex(signedSHA256bytes);
+                    String signedSHA256 = convertToString(signedSHA256bytes);
 
                     // inserting the hashes into the new block
                     newBlockRecord.setASHA256String(sha256String);
@@ -367,8 +367,8 @@ class UnverifiedBlockConsumer implements Runnable {
     }
 
     private String getPreviousHash(String blockchain) {
-        System.out.println("Current blockchain: ");
-        System.out.println(blockchain);
+//        System.out.println("Current blockchain: ");
+//        System.out.println(blockchain);
         String str = blockchain.substring(blockchain.indexOf("<ASHA256String>"), blockchain.indexOf("</ASHA256String>"));
         str = str.replace("<ASHA256String>", "");
         str = str.replace("</ASHA256String>", "");
@@ -383,7 +383,7 @@ class UnverifiedBlockConsumer implements Runnable {
         return signer.sign();
     }
 
-    public String convertToHex(byte[] byteData) {
+    public String convertToString(byte[] byteData) {
         return Base64.getEncoder().encodeToString(byteData);
     }
 
@@ -393,7 +393,7 @@ class UnverifiedBlockConsumer implements Runnable {
         md.update(unverifiedBlock.getBytes());
         byte[] byteData = md.digest();
 
-        return convertToHex(byteData);
+        return convertToString(byteData);
     }
 
 }
@@ -403,9 +403,11 @@ class BlockchainWorker extends Thread {
     // Local socket reference. The socket is passed in through the constructor from the BlockchainServer.
     // The socket is a connection to a bc process.
     Socket sock;
+    ProcessBlock[] processBlocks;
 
-    BlockchainWorker(Socket s) {
+    BlockchainWorker(Socket s, ProcessBlock[] processBlocks) {
         sock = s;
+        this.processBlocks = processBlocks;
     }
 
     public void run() {
@@ -414,22 +416,62 @@ class BlockchainWorker extends Thread {
 
             // Creating a reader to read in blockchain data from the socket
             BufferedReader in = new BufferedReader(new InputStreamReader(sock.getInputStream()));
-            String data = "";
-            String data2;
+
             // reading in data from the socket and concatenating it into one string.
             // At the end of reading it will have read in the whole updated blockchain
-            while ((data2 = in.readLine()) != null) {
-                data = data + data2;
+            StringBuilder newBlockchainSb = new StringBuilder();
+            String data;
+            while ((data = in.readLine()) != null) {
+                newBlockchainSb.append(data);
             }
-            // setting the process's blockchain variable to this new updated blockchain
-            bc.blockchain = data;
-            // printing out the new blockchain to the console
-            System.out.println("         --NEW BLOCKCHAIN--\n" + bc.blockchain + "\n\n");
+            String newBlockchain = newBlockchainSb.toString();
+
+            // get hash from newest blockchain block
+            String hash = getFirstOfElementFromBlockchain(newBlockchain, "ASHA256String");
+            // get signed hash from newest blockchain
+            String signedHash = getFirstOfElementFromBlockchain(newBlockchain, "ASignedSHA256");
+            // get verification process id from newest blockchain block
+            int verifierPid = Integer.valueOf(getFirstOfElementFromBlockchain(newBlockchain, "AVerificationProcessID"));
+            // look up public key of this process by its process id
+            PublicKey verifierPubKey = processBlocks[verifierPid].pubKey;
+
+            // verify the signature using the processes public key to decrypt the signed hash and compare it to the original hash
+            boolean verifiedSig = verifySig(hash.getBytes(), verifierPubKey, Base64.getDecoder().decode(signedHash));
+
+            // if signature has been verified, print the new blockchain to the console and set it as the current blockchain
+            // otherwise, discard the new blockchain
+            if (verifiedSig) {
+                System.out.println("Verified signature of new blockchain from verifierPid");
+                // setting the process's blockchain variable to this new updated blockchain
+                bc.blockchain = newBlockchain;
+                // printing out the new blockchain to the console
+                System.out.println("         -- NEW BLOCKCHAIN --\n" + bc.blockchain + "\n\n");
+            } else {
+                System.out.println("Could not verify signature of new blockchain. Discarding");
+            }
+
             // closing the connection
             sock.close();
-        } catch (IOException x) {
+        } catch (Exception x) {
             x.printStackTrace();
         }
+    }
+
+    // verify the signature using the processes public key to decrypt the signed hash and compare it to the original hash
+    public static boolean verifySig(byte[] data, PublicKey key, byte[] sig) throws Exception {
+        Signature signer = Signature.getInstance("SHA1withRSA");
+        signer.initVerify(key);
+        signer.update(data);
+
+        return (signer.verify(sig));
+    }
+
+    // extract the value of a given element from the blockchain and return it as a string
+    private String getFirstOfElementFromBlockchain(String blockchain, String element) {
+        String str = blockchain.substring(blockchain.indexOf("<" + element + ">"), blockchain.indexOf("</" + element + ">"));
+        str = str.replace("<" + element + ">", "");
+        str = str.replace("</" + element + ">", "");
+        return str;
     }
 }
 
@@ -459,7 +501,7 @@ class BlockchainServer implements Runnable {
                 sock = servsock.accept();
                 // starting BlockchainWorker in another thread, freeing up BlockchainServer to accept new connections.
                 // Passing in socket to worker.
-                new BlockchainWorker(sock).start();
+                new BlockchainWorker(sock, processBlocks).start();
             }
         } catch (IOException ioe) {
             System.out.println(ioe);
@@ -653,7 +695,7 @@ class DataFileToXmlParser {
 
         try {
             // try with resources block. Reader is created to read from medical data file.
-            try (BufferedReader br = new BufferedReader(new FileReader("/Users/oliviachisman/Google Drive/depaul/csc_435/blockchain2/src/" + FILENAME))) {
+            try (BufferedReader br = new BufferedReader(new FileReader(FILENAME))) {
                 // setting up variables to be used when parsing medical data
                 String[] tokens;
                 String inputLineStr;
@@ -677,8 +719,8 @@ class DataFileToXmlParser {
                     // create a new block record and add it to the block record array
                     blockArray[n] = new BlockRecord();
 
-                    blockArray[n].setASHA256String("SHA string goes here..."); //TODO
-                    blockArray[n].setASignedSHA256("Signed SHA string goes here..."); //TODO
+                    blockArray[n].setASHA256String("");
+                    blockArray[n].setASignedSHA256("");
 
                     // get universally unique identifier for the block record and set it in the block record
                     suuid = UUID.randomUUID().toString();
@@ -686,7 +728,7 @@ class DataFileToXmlParser {
                     // set process number
                     blockArray[n].setACreatingProcess("" + pnum);
                     // we will set the verification id later during verification
-                    blockArray[n].setAVerificationProcessID("To be set later...");
+                    blockArray[n].setAVerificationProcessID("");
                     // setting the actual patient data. We know the data pieces will be separated by the string " +"
                     // and we know their ordering, as specified in the member variables above
                     tokens = inputLineStr.split(" +");
@@ -768,6 +810,57 @@ public class bc {
     static int PID = 0;
     static KeyPair keyPair;
 
+    public static void main(String args[]) {
+        int q_len = 6; // setup
+        // if argument present, parse it as the process ID. Otherwise, default to zero
+        PID = (args.length < 1) ? 0 : Integer.parseInt(args[0]);
+        // print user instructions and the process ID for this process
+        System.out.println("Clark Elliott's BlockFramework control-c to quit.\n");
+        System.out.println("Using processID " + PID + "\n");
+
+        // Create a thread-safe queue to store unverified blocks.
+        // The UnverifiedBlockServer will put blocks into this queue and the UnverifiedBlockConsumer will remove
+        // blocks from this queue, hence the need for a thread-safe data structure.
+        final BlockingQueue<String> queue = new PriorityBlockingQueue<>();
+        // setting port numbers for PublicKeyServer, UnverifiedBlockServer, and BlockchainServer
+        new Ports().setPorts();
+
+        PublicKeyServer publicKeyServer = new PublicKeyServer();
+
+        // starting up PublicKeyServer in a new thread
+        new Thread(publicKeyServer).start();
+        // starting up UnverifiedBlockServer in a new thread, and passing in the queue created above
+        new Thread(new UnverifiedBlockServer(queue)).start();
+        // starting up BlockchainServer in a new thread
+        new Thread(new BlockchainServer(publicKeyServer.processBlocks)).start();
+        // pause for 5 seconds to make sure other bc processes have started
+        try {
+            Thread.sleep(5000);
+        } catch (Exception e) {
+        }
+
+//        System.out.println("*** init ***");
+//        System.out.println(blockchain);
+
+        // create initial block
+        createAndSendFirstBlock();
+//        System.out.println("*** init2 ***");
+//        System.out.println(blockchain);
+
+
+        // send out public key, unverified blocks
+        new bc().MultiSend();
+        // pause for 1 second to make sure all processes received data
+        try {
+            Thread.sleep(1000);
+        } catch (Exception e) {
+        }
+
+        // start up UnverifiedBlockConsumer in a new thread
+        new Thread(new UnverifiedBlockConsumer(queue, keyPair)).start();
+    }
+
+
     // generating an RSA public-private key pair
     private KeyPair generateKeyPair(long seed) throws Exception {
         KeyPairGenerator keyGenerator = KeyPairGenerator.getInstance("RSA");
@@ -843,56 +936,6 @@ public class bc {
             toServer_keys.flush();
             sock.close();
         }
-    }
-
-    public static void main(String args[]) {
-        int q_len = 6; // setup
-        // if argument present, parse it as the process ID. Otherwise, default to zero
-        PID = (args.length < 1) ? 0 : Integer.parseInt(args[0]);
-        // print user instructions and the process ID for this process
-        System.out.println("Clark Elliott's BlockFramework control-c to quit.\n");
-        System.out.println("Using processID " + PID + "\n");
-
-        // Create a thread-safe queue to store unverified blocks.
-        // The UnverifiedBlockServer will put blocks into this queue and the UnverifiedBlockConsumer will remove
-        // blocks from this queue, hence the need for a thread-safe data structure.
-        final BlockingQueue<String> queue = new PriorityBlockingQueue<>();
-        // setting port numbers for PublicKeyServer, UnverifiedBlockServer, and BlockchainServer
-        new Ports().setPorts();
-
-        PublicKeyServer publicKeyServer = new PublicKeyServer();
-
-        // starting up PublicKeyServer in a new thread
-        new Thread(publicKeyServer).start();
-        // starting up UnverifiedBlockServer in a new thread, and passing in the queue created above
-        new Thread(new UnverifiedBlockServer(queue)).start();
-        // starting up BlockchainServer in a new thread
-        new Thread(new BlockchainServer(publicKeyServer.processBlocks)).start();
-        // pause for 5 seconds to make sure other bc processes have started
-        try {
-            Thread.sleep(5000);
-        } catch (Exception e) {
-        }
-
-//        System.out.println("*** init ***");
-//        System.out.println(blockchain);
-
-        // create initial block
-        createAndSendFirstBlock();
-//        System.out.println("*** init2 ***");
-//        System.out.println(blockchain);
-
-
-        // send out public key, unverified blocks
-        new bc().MultiSend();
-        // pause for 1 second to make sure all processes received data
-        try {
-            Thread.sleep(1000);
-        } catch (Exception e) {
-        }
-
-        // start up UnverifiedBlockConsumer in a new thread
-        new Thread(new UnverifiedBlockConsumer(queue, keyPair)).start();
     }
 
     public static void createAndSendFirstBlock() {
