@@ -87,9 +87,9 @@ class Ports {
 
     // assigning ports based on arbitrary base ports incremented by process ID x 1000
     public void setPorts() {
-        KeyServerPort = KeyServerPortBase + (bc.PID * 1000);
-        UnverifiedBlockServerPort = UnverifiedBlockServerPortBase + (bc.PID * 1000);
-        BlockchainServerPort = BlockchainServerPortBase + (bc.PID * 1000);
+        KeyServerPort = KeyServerPortBase + (Blockchain.PID * 1000);
+        UnverifiedBlockServerPort = UnverifiedBlockServerPortBase + (Blockchain.PID * 1000);
+        BlockchainServerPort = BlockchainServerPortBase + (Blockchain.PID * 1000);
     }
 }
 
@@ -292,16 +292,16 @@ class UnverifiedBlockConsumer implements Runnable {
                 BlockRecord newBlockRecord = getBlockRecordFromBlockXml(unverifiedBlock);
 
                 // check to see if data has already been added to the blockchain.
-                if (!bc.blockchain.contains(newBlockRecord.getABlockID())) {
+                if (!Blockchain.blockchain.contains(newBlockRecord.getABlockID())) {
                     // setting the verified by field
-                    newBlockRecord.setAVerificationProcessID("" + bc.PID);
+                    newBlockRecord.setAVerificationProcessID("" + Blockchain.PID);
                     // setting the seed field
                     newBlockRecord.setASeed("" + j);
                     // converting back to XML
                     String newBlockXmlWithSeed = getXmlFromBlockRecord(newBlockRecord);
 
                     // gather things to put into new hash: previous blockchain hash and new block data including seed
-                    String stuffToHash = getPreviousHash(bc.blockchain) + newBlockXmlWithSeed;
+                    String stuffToHash = getPreviousHash(Blockchain.blockchain) + newBlockXmlWithSeed;
                     // create hash
                     String sha256String = hashData(stuffToHash);
                     // sign hex string
@@ -312,23 +312,19 @@ class UnverifiedBlockConsumer implements Runnable {
                     // inserting the hashes into the new block
                     newBlockRecord.setASHA256String(sha256String);
                     newBlockRecord.setASignedSHA256(signedSHA256);
-//                    String verifiedBlock = unverifiedBlock.substring(0, unverifiedBlock.indexOf("<blockID>")) +
-//                            "<SignedSHA256>" + signedSHA256 + "</SignedSHA256>\n" +
-//                            "    <SHA256String>" + sha256String + "</SHA256String>\n    " +
-//                            unverifiedBlock.substring(unverifiedBlock.indexOf("<blockID>"));
 
                     // convert verified BlockRecord to XML
                     String verifiedBlock = getXmlFromBlockRecord(newBlockRecord);
 
-                    System.out.println("---- New verified block from PID " + bc.PID + " -----");
+                    System.out.println("---- New verified block from PID " + Blockchain.PID + " -----");
                     System.out.println(verifiedBlock);
 
                     // adding new block to blockchain
-                    String newBlockchain = verifiedBlock + bc.blockchain;
+                    String newBlockchain = verifiedBlock + Blockchain.blockchain;
                     // sending out new blockchain to all bc processes, including self
-                    for (int i = 0; i < bc.numProcesses; i++) {
+                    for (int i = 0; i < Blockchain.numProcesses; i++) {
                         // creating a socket to connect to each process
-                        sock = new Socket(bc.serverName, Ports.BlockchainServerPortBase + (i * 1000));
+                        sock = new Socket(Blockchain.serverName, Ports.BlockchainServerPortBase + (i * 1000));
                         // creating a print stream to write the data to the socket
                         toServer = new PrintStream(sock.getOutputStream());
                         // writing the new blockchain to the socket, sending it to the other processes
@@ -412,8 +408,6 @@ class BlockchainWorker extends Thread {
 
     public void run() {
         try {
-            // TODO verify new blockchain using pub key and verification PID
-
             // Creating a reader to read in blockchain data from the socket
             BufferedReader in = new BufferedReader(new InputStreamReader(sock.getInputStream()));
 
@@ -443,9 +437,19 @@ class BlockchainWorker extends Thread {
             if (verifiedSig) {
                 System.out.println("Verified signature of new blockchain from verifierPid");
                 // setting the process's blockchain variable to this new updated blockchain
-                bc.blockchain = newBlockchain;
+                Blockchain.blockchain = newBlockchain;
                 // printing out the new blockchain to the console
-                System.out.println("         -- NEW BLOCKCHAIN --\n" + bc.blockchain + "\n\n");
+                System.out.println("         -- NEW BLOCKCHAIN --\n" + Blockchain.blockchain + "\n\n");
+                if (Blockchain.PID == 0) {
+                    System.out.println("Writing new blockchain to file");
+                    // writing blockchain to file
+                    File file = new File("./BlockchainLedger.xml");
+                    FileWriter writer = new FileWriter(file);
+                    writer.write(Blockchain.blockchain);
+                    writer.flush();
+                    writer.close();
+                    Blockchain.file = file;
+                }
             } else {
                 System.out.println("Could not verify signature of new blockchain. Discarding");
             }
@@ -493,6 +497,7 @@ class BlockchainServer implements Runnable {
         // printing out port number
         System.out.println("Starting the blockchain server input thread using "
                 + Integer.toString(Ports.BlockchainServerPort));
+
         try {
             // creating server socket to accept connections from other bc processes (including self)
             ServerSocket servsock = new ServerSocket(Ports.BlockchainServerPort, q_len);
@@ -803,12 +808,13 @@ class PublicKeyWrapper implements Serializable {
     }
 }
 
-public class bc {
+public class Blockchain {
     static String serverName = "localhost";
     static String blockchain = "[First block]";
     static int numProcesses = 3;
     static int PID = 0;
     static KeyPair keyPair;
+    static File file;
 
     public static void main(String args[]) {
         int q_len = 6; // setup
@@ -849,7 +855,7 @@ public class bc {
 
 
         // send out public key, unverified blocks
-        new bc().MultiSend();
+        new Blockchain().MultiSend();
         // pause for 1 second to make sure all processes received data
         try {
             Thread.sleep(1000);
@@ -902,9 +908,9 @@ public class bc {
             // sending out unverified block to all bc processes, including self
             PrintStream toServer_block;
 
-            for (int i = 0; i < bc.numProcesses; i++) {
+            for (int i = 0; i < Blockchain.numProcesses; i++) {
                 // creating a socket to connect to each process
-                sock = new Socket(bc.serverName, Ports.UnverifiedBlockServerPortBase + (i * 1000));
+                sock = new Socket(Blockchain.serverName, Ports.UnverifiedBlockServerPortBase + (i * 1000));
                 // creating a print stream to write the data to the socket
                 toServer_block = new PrintStream(sock.getOutputStream());
                 // writing the new blockchain to the socket, sending it to the other processes
@@ -974,7 +980,7 @@ public class bc {
 //            System.out.println(xml);
 
             // set initial blockchain
-            bc.blockchain = xml;
+            Blockchain.blockchain = xml;
         } catch (Exception e) {
             e.printStackTrace();
         }
